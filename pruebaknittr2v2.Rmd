@@ -1,0 +1,652 @@
+---
+title: "Clusterización de Series Temporales de Consumo Eléctrico"
+subtitle: "Clustering of Electrical Consumption Time Series"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+author: 
+- Ángel Sánchez Sanjuán (Ingeniero Naval y Oceánico)
+- Manuel Martín-Merino^[UPSA]  y José Miguel Hernandez Izquierdo^[Telefónica I+D]
+abstract:  "Partiendo de un dataset del ISSDA (Irish Social Science Data Archive) de consumos eléctricos cada 30 minutos y utilizando el programa RStudio, hemos utilizado el paquete dwtclust para realizar la agrupación de las curvas de consumo diario de un grupo de clientes de tipo PYME, hemos analizado en profundidad uno de los outliers y estimado la rentabilidad de este tipo de estrategias para la segmentación de clientes de utilities."
+lang: "es"
+---
+\pagebreak
+
+## Introducción
+
+Durante el tiempo que trabajé como consultor SAP IS-U y CRM siempre me llamó la atención que cuando un cliente llama a una eléctrica para que le hagan una oferta, los únicos criterios para realizar la oferta son el tipo de cliente (doméstico o PYME), el tipo de aparato (prepago o crédito principalmente en el mercado británico),  y el consumo medio anual.
+ 
+Es interesante ver que el único elemento de segmentación, desde el punto de vista del producto que se vende (electricidad) sea el consumo medio anual. Esto se debe, creo yo,  a que hasta hace poco era la única información que las empresas distribuidoras de electricidad tenían sobre cómo sus clientes consumían su producto.
+ 
+La aparición de los contadores inteligentes ha cambiado totalmente la información de la que las utilities disponen. El poder utilizar datos de consumo tomados cada 30 minutos nos permite obtener una curva de consumo de cada uno de nuestros clientes y eso nos proporciona una inmensa potencialidad.
+
+![Curva Consumo semanal](curvasemanal.png)
+
+El objetivo de este trabajo es demostrar la viabilidad de la clusterización (agrupamiento) de los consumidores en función de las curvas de consumo diario obtenidas de sus contadores inteligentes. Para ello se ha partido de los datos reales del estudio CER Smart Metering Project proporcionados por la ISSDA (Irish Social Science Data Archive) y a través del proceso que se detalla en el siguiente capítulo, se ha llevado a cabo la clusterización de los consumidores con una media de consumo superior a 2 kWh (26) en 9 grupos, para posteriormente estudiar detalladamente dos de estos clusters (outliers) para poder estimar la posible rentabilidad de una estrategia de este tipo.
+ 
+Esta aproximación no sería más que un caso particular de un enfoque general que tendría multitud de variables, y que paso a detallar a continuación.
+ 
+Como distribuidora o empresa integrada de electricidad (generación y distribución) conozco (o debería conocer) el perfil horario de mi coste de energía. Por otro lado, conozco, al menos de forma aproximada, la estructura horaria de precios de venta de esta energía. Si a esto añado la curva de consumo horario de mis clientes, podré calcular una rentabilidad potencial para cada uno de esos clientes o agrupamiento de clientes.
+ 
+Tanto la estructura de costes como los precios de venta y las curvas de consumo son dinámicas, pero se podrá llegar a generalizaciones, sobre todo desde el punto de vista de las familias de curvas de consumo o clusters sobre la masa de clientes. 
+ 
+En el caso estudiado aquí (es una muestra pequeña de 1000 aparatos, por lo que las conclusiones deben tomarse con precaución), se encuentran outliers que representan un 0,3% de los consumidores de la muestra, con un perfil de consumo centrado en horas valle. Suponiendo este porcentaje de clientes y un descuento del 7,5% en el coste de la energía en esas horas, se ha estimado un ahorro de 4,5 M€ para una compañía distribuidora con 6 M de clientes.
+ 
+Ampliando la clusterización a todos los clientes de la compañía y comparándola con curvas de precios y coste de la energía reales las posibilidades son, a mi modo de ver, inmensas. Dejemos volar la imaginación hacia una aplicación de máximos.
+ 
+Imaginemos una empresa que posea parque eólicos y que en los meses entre Septiembre y Abril tiene una gran producción entre las 2:00 y las 6:00 de la mañana. La curva de precios de venta de la energía a esas horas varía día a día, pero se podrá calcular que no será menor que el 20% del precio más alto de cada uno de los días. Por tanto, el diferencial entre el coste y el precio de venta (la rentabilidad potencial) de ĺos clientes con un perfil de consumo alto en esa franja horaria será muy alto.
+ 
+Por supuesto, el mercado eléctrico es muy complicado y habrá multitud de factores no tenidos en cuenta aquí, pero lo que es innegable es el hecho de que poder agrupar a los clientes en función de su perfil de consumo nos da una herramienta de segmentación y de marketing a años luz de la utilizada hasta ahora, basada en el consumo medio anual.
+
+
+\pagebreak
+
+## Arquitectura del Sistema
+
+Se parte de un dataset que contiene los datos del estudio CER Smart Metering Project (Electrical &Gas).
+
+Los datos se estructuran en tres columnas. La primera contiene el número de aparato, la segunda un código numérico que nos da un timestamp (en intervalos de 30 minutos) y que ha tenido que ser modificado para convertirlo a un formato estándar para el estudio y una tercera que contiene el consumo en ese intervalo en kWh.
+
+La limpieza inicial de datos se llevó a cabo con Rstudio y las librerías habituales, pero una vez los datos se encontraban en los formatos adecuados, el tamaño del dataset (743 MB) imposibilitaba su tratamiento  únicamente con la citada herramienta.
+
+Acudí entonces  a SparkR, que me permite utilizar Apache Spark, con sus ventajas en el uso de la memoria y su velocidad, junto con Rstudio, la herramienta con la que más cómodo me he encontrado a lo largo de este curso.
+
+Una vez convertido a dataframe de SparkR he ido extrayendo diferentes resultados que he ido analizando y visualizando.
+
+A continuación se muestra un esquema de la arquitectura y se explica someramente cada uno de los pasos.
+
+1. Obtención de los datos:
+Tras una búsqueda por Internet de dataset que contuvieran el tipo de datos necesarios para el análisis encontré los datos del ISSDA ya mencionados. Estos datos no se encuentran en descarga libre, sino que deben ser solicitados y son entregados bajo licencia, por lo que no puedo hacer los datos accesibles. Sin embargo, el proceso de solicitud y obtención es fácil y muy rápido.
+
+2. Limpieza y Preprocesado:
+Los datos se proporcionan en un archivo csv que contiene tres columnas, por un lado el número de aparato (o contador), una segunda columna con una marca de tiempo (no estandarizada, un código de 5 dígitos, que contiene el día y la hora) y una tercera columna con el valor de consumo en kWh. El reto más importante en esta parte fue convertir la marca de tiempo a un formato adecuado, teniendo en cuenta además que el tamaño del dataset y las características de mi ordenador (escaso de RAM) que hicieron el proceso especialmente frustrante.
+
+3. Almacenamiento y filtrado de datos:
+Una vez conseguido un dataset “limpio” y dados los problemas encontrados para trabajar con él, una de las clases del experto me “abrió los ojos” y me mostró el potencial, que para mi problema, tenía Apache Spark, con las ventajas ya comentadas de velocidad y la posibilidad de utilizarlo desde R mediante SparkR. El uso de Spark ha representado en algunos momentos una mayor complicación, pero ha sido la única forma de poder llevar a cabo el proceso completo en local con una máquina poco potente. Sin embargo, seguía existiendo la limitación de que para el análisis en profundidad debía convertir los objetos Spark, en objetos R.
+
+4. Estudio analítico:
+Una vez solucionado el apartado “técnico”, me concentré en el objetivo propiamente dicho, la clusterización de las series temporales. He comenzado con un análisis exploratorio centrado principalmente en las medias, máximos y mínimos. En lugar de agrupar las 709 series completas disponibles (que no habrían podido ser convertidas a objetos R) me centré en agrupar muestras pequeñas, pero que me permitieran demostrar la viabilidad del método. Finalmente me decidí por clusterizar las series de consumos medios superiores a 2 kWh. Una vez calculados los clusters utilizando dtwclust mediante el método SBD, llevé a cabo un análisis pormenorizado de varios de los outliers obtenidos.
+
+5. Visualización de resultados:
+Siendo sinceros está es la parte a la que he dedicado un menor esfuerzo. Para la representación de las series he utilizado ggplot2, mientras que la representación de los clusters la realiza automáticamente el paquete dtwclust con esta librería. 
+Como desde su concepción este trabajo debe muchísimo a la librería dtwclust y su autor Alexis Sardá-Espinosa. 
+
+\pagebreak
+
+
+## Análisis de datos
+
+El análisis de datos lo llevaremos a cabo utilizando SparkR
+
+Establecemos los paths para poder cargar SparkR y la cargamos
+```{r cargar spark}
+
+Sys.setenv(SPARK_HOME = "/usr/lib/spark")
+.libPaths(c(file.path(Sys.getenv('SPARK_HOME'), 'R', 'lib'), .libPaths()))
+
+library (SparkR)
+require(xts)
+```
+
+Arrancamos la sesión en local y dedicándole 3 GB de RAM (el ordenador es antiguo y es una de las razones por las que tenemos que utilizar SparkR)
+
+```{r}
+sparkR.session(master = "local[*]", sparkConfig = list(spark.driver.memory = "3g"))
+
+```
+
+Cargamos el dataset
+
+```{r}
+Data <- read.df(path = 'Datasetlimpio.csv', "csv",
+                     header='true')
+
+head (Data)
+```
+
+Al cargarlo en SparkR asume el tipo de datos, los modificamos a los adecuados
+
+```{r}
+Data2 <- withColumn(Data, "V1", cast(Data$V1, "int"))
+Data3 <- withColumn(Data2, "V3", cast(Data$V3, "float"))
+Data4 <- withColumn(Data3, "hora4", cast(Data3$hora4, "timestamp"))
+head(Data4)
+
+```
+
+Extraemos los datos de uno de los aparatos para poder trabajar con ellos. Al tratarse de objetos de SparkR hay problemas al aplicarle bucles, por lo que no podemos utilizar el mismo proceso para todo el dataset
+
+```{r}
+
+Aparato1411S <- (filter(Data4, Data4$V1 == 1411))
+
+Aparato1411R <- collect(Aparato1411S)
+
+Aparato1411R$V1 <- NULL
+
+Aparato1411Rdata <- data.frame(Aparato1411R)
+
+
+tail(Aparato1411Rdata)
+
+Aparato1411serie <- xts (Aparato1411Rdata, order.by = Aparato1411Rdata$hora4)
+
+tail(Aparato1411serie)
+
+Aparato1411serie$hora4 <- NULL
+
+### Eliminamos los NAs del index
+Aparato1411seriebien <- Aparato1411serie["2009/2010"]
+
+
+tail (Aparato1411seriebien)
+
+
+plot.xts(Aparato1411seriebien, main = "Aparato 1411")
+
+#Veamos una semana cualquiera
+octubre1411 <- Aparato1411seriebien['2009-10']
+segundasemanaoctubre1411 <- Aparato1411seriebien['2009-10-05/2009-10-09']
+
+#si elegimos solo el dia 09
+nueveoctubre1411 <- Aparato1411seriebien['2009-10-09']
+
+
+plot.xts(octubre1411, main = "Aparato 1411, Octubre 2009")
+plot.xts(segundasemanaoctubre1411, main = "Aparato 1411, Segunda semana Octubre 2009")
+
+
+plot.xts(nueveoctubre1411, main = "Aparato 1411, 09-10-2009")
+
+
+```
+
+## Análisis Exploratorio
+
+Agrupando por aparato, vemos cuantos aparatos contienen todos los datos 25730.
+```{r}
+head(summarize(groupBy(Data4, Data4$V1), count = n(Data4$V1)))
+Datosporaparato <-(summarize(groupBy(Data4, Data4$V1), count = n(Data4$V1)))
+show(Datosporaparato)
+
+Datosporaparato2 <- collect(Datosporaparato)
+
+Datosapaparatoordenados <- Datosporaparato2 [order(Datosporaparato2$V1),] 
+
+Aparatoscompletos <- subset(Datosapaparatoordenados, Datosapaparatoordenados$count == 25730)
+aparatos <- Aparatoscompletos$V1 #709 aparatos con 25730 medidas por aparato
+length(aparatos)
+```
+
+
+De nuevo, el enfoque es ligeramente diferente al tratarse de objetos SparkR. Realizaremos un análisis de las medias, máximos y mínimos de consumo, tanto para categorizar interlocutores comerciales (SME o Doméstico) como para poder ir ya obteniendo información.
+```{r}
+
+Media <-(summarize(groupBy(Data4, Data4$V1), mean(Data4$V3)))
+Media2 <- collect(Media)
+
+boxplot(Media2$`avg(V3)`, main = "Media de consumo de cada aparato")
+hist(Media2$`avg(V3)`, main = "Media de consumo de cada aparato")
+
+summary(Media2$`avg(V3)`)
+
+##Parece que se podría acotar más dejando la media de consumo por debajo de 1 kWh
+
+Mediamenor1 <- subset(Media2, Media2$`avg(V3)`<1)
+head(Mediamenor1) 
+
+hist(Mediamenor1$`avg(V3)`, main = "Aparatos con media de consumo < 1 kWh")
+
+```
+
+El consumo mediano es 0,51 kWh, mientras que el consumo anual es casi 9 MWh. Este valor es alto si lo comparamos por ejemplo con consumo domésticos españoles. Por aquí habría todo un campo a explorar.  
+
+```{r}
+MedianaConsumoDomestico <- median(Media2$`avg(V3)`)
+MedianaConsumoDomestico
+
+ConsumoAnualMediano = MedianaConsumoDomestico*48*365
+ConsumoAnualMediano
+```
+
+
+Veremos ahora los máximos y mínimos
+
+```{r}
+## Separando por máximos y mínimos
+
+Maximos <-(summarize(groupBy(Data4, Data4$V1), max(Data4$V3)))
+MaximosR <- collect(Maximos)
+
+boxplot(MaximosR$`max(V3)`, main = "Consumo máximo por aparato")
+summary(MaximosR$`max(V3)`)
+
+# El valor mediano máximo de 6.79 implica una potencia instalada bien por encima de 10 kWh. "Umbral" del mercado doméstico en España
+
+hist(MaximosR$`max(V3)`, main = "Consumo máximo por aparato")
+
+Maxdataset <-max(MaximosR$`max(V3)`)
+
+Minimos <-(summarize(groupBy(Data4, Data4$V1), min(Data4$V3)))
+MinimosR <- collect(Minimos)
+
+summary(MinimosR$`min(V3)`)
+
+hist(MinimosR$`min(V3)`, main = "Consumo mínimo por aparato")
+
+```
+
+
+\pagebreak
+
+## Clusterización
+
+Vamos a intentar clusterizar aquellos aparatos que tienen una media de consumo por encima de 2 kWh (lo que se traduciría en un consumo anual por encima de 35 MWh, perfil claramente SME). 
+
+Las curvas de consumo completas disponibles de este tipo de consumidores son 26. 
+
+Las curvas a clusterizar serán las de consumo diario para el día 7 de Octubre de 2009 (miércoles).
+
+¿Que clusterizamos?: Las curvas de consumo midiendo la distancia entre ellas.
+
+¿Cómo evaluamos esta distancia? Mediante la distancia SBD (Shape Based Distance).
+
+La distancia SBD se basa en la correlación cruzada con coeficientes normalizados entre dos series y fue propuesta como parte del algoritmo de clusterización k-shape en 2015 por Paparrizos y Gravano. La distancia se computa utilizando la transformada rápida de Fourier. 
+
+Este método es sensible a la escala, por lo que se utiliza normalización z. El hecho de tipificar la variable implica que este método se centrará en agrupar las curvas únicamente por la forma de la curva de consumo y no tendrá en cuenta las unidades consumidas.
+
+¿Cómo encontramos los prototipos o centroides? Utilizando la extracción de forma del algoritmo k-shape
+
+
+```{r}
+require("TSclust")
+require("TSdist")
+require("dtwclust")
+
+Mediamayor2 <- subset(Media2, Media2$`avg(V3)`>2)
+plot(Mediamayor2)
+```
+
+Filtramos ahora cuales de esos aparatos tienen los datos completos. 
+
+```{r}
+
+Aparatosmayor2 <- Mediamayor2$V1
+
+Aparatosmayor2completos <- intersect(Aparatosmayor2,Aparatoscompletos$V1)
+
+length(Aparatosmayor2completos)
+
+```
+
+Separamos los datos de estos aparatos en un objeto Spark y empezamos a trabajar con ellos
+
+```{r}
+Mayor2nuevoS <- subset(Data4, Data4$V1 %in% Aparatosmayor2completos,1:3)
+
+#Lo convertimos a R
+
+Mayor2nuevoR <- SparkR::collect(Mayor2nuevoS)
+
+#Convertimos el margen de tiempo
+t1<- as.POSIXct("2009-10-07 00:00:00")
+t2<- as.POSIXct("2009-10-07 23:30:00")
+
+# y filtramos (pasamos a tener 1248 observaciones)
+
+Mayor2nuevoR2 <- subset(Mayor2nuevoR, Mayor2nuevoR$hora4 %in% t1:t2,1:3)
+
+```
+
+
+Y lo extraemos en el formato adecuado para utilizarlo con el paquete dtwclust y lo incluimos en una lista
+
+```{r}
+
+for(j in Aparatosmayor2completos){
+  nam <- paste("r", j, sep = ".")
+  assign(nam, subset(Mayor2nuevoR2$V3, Mayor2nuevoR2$V1 == j, 2))
+}
+
+list5 <- list(r.1028, r.1056, r.1146, r.1177, r.1228, r.1254, r.1330, r.1333,
+              r.1370, r.1386, r.1401, r.1411, r.1414, r.1427, r.1457, r.1465,
+              r.1518, r.1520, r.1686, r.1688, r.1719, r.1737, r.1803, r.1806,
+              r.1853, r.1961)
+
+names(list5) <- c(1028, 1056, 1146, 1177, 1228, 1254, 1330, 1333,
+                  1370, 1386, 1401, 1411, 1414, 1427, 1457, 1465,
+                  1518, 1520, 1686, 1688, 1719, 1737, 1803, 1806,
+                  1853, 1961)
+
+length(list5)
+
+```
+
+Llevamos a cabo la clusterización y nos fijamos en el primero de los clusters que muestra el perfil de consumo “normal”
+
+```{r}
+hc_sbd <- tsclust(list5, type = "h", k = 9L,
+                  preproc = zscore, seed = 899,
+                  distance = "sbd", centroid = shape_extraction,
+                  control = hierarchical_control(method = "average"))
+
+#Establecemos 9 clusters, preprocesamos mediante una normalización z y el centroide será el obtenido mediante sbd
+
+plot(hc_sbd)
+
+#número de series
+
+hc_sbd
+```
+
+Tratar de inferir las características del cliente a partir de la curva de consumo sería una buena manera de ampliar este estudio, pero con datos anonimizados  será siempre un poco aventurado. Lo intentaremos a partir de los centroides de los clusters. 
+
+El cluster 1 y el 2, muy similares, muestran, a mi modo de ver, un perfil horario laboral muy claro y serían PYMES típicas, con bajos consumos relativos a horas no laborales y altos en estas. Entre ambos representan más del 65% de las curvas analizadas.
+
+Los clusters 3, 5, 6 y 7 representan patrones de consumo difícilmente clasificables, representando algo más del 19% de las curvas.
+
+El cluster 8 merecería un análisis por si solo para intentar “adivinar” el tipo de cliente. Ya que en 14 ocasiones a lo largo del día pasa del consumo máximo al mínimo sin solución de continuidad. 
+
+Los clusteres 4 y 9 que se comentarán más adelante y representan algo menos del 12% de la muestra, son los que nos interesan y se comentarán en profundidad más adelante. 
+
+```{r}
+plot(hc_sbd, type = "sc")
+
+# Si nos fijamos en el primer cluster
+
+plot(hc_sbd, type = "series", clus = 1L)
+plot(hc_sbd, type = "centroids", clus = 1L)
+```
+
+
+\pagebreak
+
+## Análisis de perfiles de consumo de los outliers
+
+Tanto el aparato 1333 como el 1806 y el 1737 tienen perfiles de consumo centrados en horas valle
+
+```{r}
+plot(r.1333, type = "l") 
+
+```
+
+Es interesante ya que tiene un consumo superior a los 6 kWh durante 12 horas de 24 a 12
+
+Podría tratarse de alumbrado público (veremos más adelante que no cumple dicho perfil), pero desde luego se trata de un consumo alto que comienza a una hora y termina a otra con un consumo cuasi constante en los periodos de funcionamiento. 
+
+
+```{r}
+plot(r.1737, type = "l")
+plot(r.1806, type = "l")
+```
+
+
+Estos dos también son interesantes ya que tiene consumos muy altos por la noche.
+
+En este caso el perfil de consumo es similar a uno doméstico, pero con valores de consumo mucho más altos, sobre todo en la parte de los mínimos. Sugiere un tipo de cliente como un hotel o similar.
+
+Vamos a analizarlos con detenimiento. Utilizaremos para este análisis ggplot2 para representar las gráficas de consumo
+
+### Aparato 1333
+```{r}
+Aparato1333S <- (filter(Data4, Data4$V1 == 1333))
+
+Aparato1333R <- collect(Aparato1333S)
+
+Aparato1333R$V1 <- NULL
+
+Aparato1333Rdata <- data.frame(Aparato1333R)
+
+
+tail(Aparato1333Rdata)
+
+Aparato1333serie <- xts (Aparato1333Rdata, order.by = Aparato1333Rdata$hora4)
+
+head(Aparato1333serie)
+tail(Aparato1333serie)
+
+Aparato1333serie$hora4 <- NULL
+
+### Eliminamos los NAs del index
+Aparato1333seriebien <- Aparato1333serie["2009/2010"]
+
+
+tail (Aparato1333seriebien)
+
+
+Aparato1333seriebiendf <- fortify(Aparato1333seriebien)
+str(Aparato1333seriebiendf)
+Aparato1333seriebiendf$V3 <- as.numeric(as.character(Aparato1333seriebiendf$V3))
+
+ggplot(data=Aparato1333seriebiendf, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "blue") +
+  ggtitle("Aparato 1333 Total")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+```
+
+Esta gráfica nos dice que no se produce un patrón estacional, lo que eliminaría la opción de tratarse de un alumbrado público, ya que este mostraría un acusado perfil estacional. Se trataría por tanto, más bien, de equipos eléctricos como hornos o similar, conjeturando. 
+
+```{r}
+#Analizamos ahora un mes y una semana como en el caso anterior
+
+octubre1333 <- Aparato1333seriebien['2009-10']
+segundasemanaoctubre1333 <- Aparato1333seriebien['2009-10-05/2009-10-09']
+
+#si elegimos solo el dia 07
+sieteoctubre1333 <- Aparato1333seriebien['2009-10-07']
+
+octubre1333df <- fortify(octubre1333)
+octubre1333df$V3 <- as.numeric(as.character(octubre1333df$V3))
+
+ggplot(data=octubre1333df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "green") +
+  ggtitle("Aparato 1333 Consumo Octubre")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+segundasemanaoctubre1333df <- fortify(segundasemanaoctubre1333)
+
+segundasemanaoctubre1333df$V3 <- as.numeric(as.character(segundasemanaoctubre1333df$V3))
+
+ggplot(data=segundasemanaoctubre1333df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "magenta") +
+  ggtitle("Aparato 1333 Consumo segunda semana Octubre")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+sieteoctubre1333df <- fortify(sieteoctubre1333)
+str(sieteoctubre1333df)
+sieteoctubre1333df$V3 <- as.numeric(as.character(sieteoctubre1333df$V3))
+
+ggplot(data=sieteoctubre1333df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "red", size = 1) +
+  ggtitle("Aparato 1333 Consumo Diario")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+```
+
+Se trata de un interlocutor comercial con un perfil claramente nocturno, entre las 22:00 y las 10:00 de la mañana. El análisis del patrón nos ha permitido encontrar un candidato perfecto para cualquier oferta con el objetivo de rentabilizar generación no interrumpible.
+
+El consumo de este aparato en 2010 fue de 66 MWh
+```{r}
+Aparato1333.2010 <- Aparato1333serie["2010"]
+
+sum(as.integer(Aparato1333.2010$V3))
+```
+
+### Aparato 1806
+
+```{r}
+Aparato1806S <- (filter(Data4, Data4$V1 == 1806))
+
+Aparato1806R <- collect(Aparato1806S)
+
+head(Aparato1806R)
+tail(Aparato1806R)
+
+Aparato1806R$V1 <- NULL
+
+Aparato1806Rdata <- data.frame(Aparato1806R)
+
+
+tail(Aparato1806Rdata)
+
+Aparato1806serie <- xts (Aparato1806Rdata, order.by = Aparato1806Rdata$hora4)
+
+head(Aparato1806serie)
+tail(Aparato1806serie)
+
+Aparato1806serie$hora4 <- NULL
+
+### Eliminamos los NAs del index
+Aparato1806seriebien <- Aparato1806serie["2009/2010"]
+
+
+tail (Aparato1806seriebien)
+
+
+Aparato1806seriebiendf <- fortify(Aparato1806seriebien)
+
+Aparato1806seriebiendf$V3 <- as.numeric(as.character(Aparato1806seriebiendf$V3))
+
+ggplot(data=Aparato1806seriebiendf, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "blue") +
+  ggtitle("Aparato 1806 Total")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+#Analizamos ahora un mes y una semana como en el caso anterior
+
+octubre1806 <- Aparato1806seriebien['2009-10']
+segundasemanaoctubre1806 <- Aparato1806seriebien['2009-10-05/2009-10-09']
+
+#si elegimos solo el dia 07
+sieteoctubre1806 <- Aparato1806seriebien['2009-10-07']
+
+octubre1806df <- fortify(octubre1806)
+octubre1806df$V3 <- as.numeric(as.character(octubre1806df$V3))
+
+ggplot(data=octubre1806df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "green") +
+  ggtitle("Aparato 1806 Consumo Octubre")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+
+segundasemanaoctubre1806df <- fortify(segundasemanaoctubre1806)
+
+segundasemanaoctubre1806df$V3 <- as.numeric(as.character(segundasemanaoctubre1806df$V3))
+
+ggplot(data=segundasemanaoctubre1806df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "magenta") +
+  ggtitle("Aparato 1806 Consumo Segunda Semana Octubre")+ xlab("Timestamp") +
+  ylab("Consumo (kWh)")
+
+
+sieteoctubre1806df <- fortify(sieteoctubre1806)
+str(sieteoctubre1806df)
+sieteoctubre1806df$V3 <- as.numeric(as.character(sieteoctubre1806df$V3))
+
+ggplot(data=sieteoctubre1806df, aes(x = Index, y = V3)) + 
+  geom_line(aes(), colour = "red", size = 1) +
+  ggtitle("Aparato 1806 Consumo Diario")+ xlab("Timestamp") + ylab("Consumo (kWh)")
+
+
+```
+
+El consumo de este aparato en 2010 fue de 45 MWh
+```{r}
+Aparato1806.2010 <- Aparato1806serie["2010"]
+
+sum(as.integer(Aparato1806.2010$V3))
+```
+
+\pagebreak
+
+## Rentabilidad de la clusterización y la investigación de los outliers
+
+Tras el análisis, hemos visto aparatos como el 1333 o el 1886 concentran sus consumos en horas valle. Además se trata de medianos consumidores  (66 MWh para el 1333 y 45 MWh para el 1886).
+
+Si como comercializadora somos capaces de detectar una bolsa de este tipo de clientes utilizando , por ejemplo, este tipo de técnicas, podremos llegar a acuerdos en el mercado mayorista a plazo con generadoras para comprar paquetes de energía para suplir a estos clientes.
+
+![Mercado Eléctrico](mercado.png) 
+
+Si la empresa generadora cuenta con plantas de generación convencional no intermitentes (nuclear, térmicas, etc.) o con generación renovable eólica, por ejemplo, con un perfil de generación más amplio por la noche, es posible que se pueda obtener un precio competitivo.
+
+![Perfil horario Generación Eólica](eolica.png)
+
+Este planteamiento será aún más interesante cuando hablemos de empresas eléctricas integradas (que cuenten con empresas de generación y comercializadoras), ya que se podrá conocer los costes de generación, desagregados por hora y periodo anual, por lo que podremos hacer un matching de clientes más fino, aumentando la rentabilidad.
+
+La potencialidad de este método es, a mi modo de ver, amplía. Nos encontramos ante un dataset que contiene 1000 aparatos, de los cuales el 2,6% tiene una media de consumo por encima de 2 kWh. De ellos 3 tienen un perfil que cumple los requisitos. Eso representa un 0,3% de los clientes de la suma doméstico y SME.
+
+Para tener un orden de magnitud de esta potencialidad, podemos realizar algunas asunciones. En una compañía con unos 6 M de clientes y un porcentaje de SME y domésticos del 80%, y suponiendo la misma proporción de nuestro dataset, estaríamos hablando de unos 15000 clientes con un gasto medio anual, a precios mayoristas de 60 €/MWh, de unos 4000 €/año. 
+
+![Precios mayoristas de la electricidad](precios.png)
+
+Esto representa, a grosso modo, unos costes de energía para la distribuidora de unos 60 M€/año, por lo que una reducción del precio medio de compra del MWh en un entorno del 5-10%, representaría un ahorro de costes de 4,5 M€/año. Todo esto sin evaluar el beneficio, es decir, la diferencia entre el coste de adquisición de la energía y el precio al que esta se vende al consumidor final.
+
+Todos estos datos se extrapolan de una pequeña muestra por lo que deberían ser tomados con precaución y analizados sobre una base de clientes real.
+
+\pagebreak
+
+## Bibliografía
+
+  Alexis Sarda-Espinosa (2017). dtwclust: Time Series Clustering Along with
+  Optimizations for the Dynamic Time Warping Distance. R package version 4.0.1.
+  https://CRAN.R-project.org/package=dtwclust
+  
+  Garrett Grolemund, Hadley Wickham (2011). Dates and Times Made Easy with
+  lubridate. Journal of Statistical Software, 40(3), 1-25. URL
+  http://www.jstatsoft.org/v40/i03/.
+  
+  Hadley Wickham, Romain Francois, Lionel Henry and Kirill Müller (2017). dplyr: A
+  Grammar of Data Manipulation. R package version 0.7.0.
+  https://CRAN.R-project.org/package=dplyr
+  
+  Hadley Wickham (2017). tidyr: Easily Tidy Data with 'spread()' and 'gather()'
+  Functions. R package version 0.6.3. https://CRAN.R-project.org/package=tidyr
+  
+  Jeffrey A. Ryan and Joshua M. Ulrich (2014). xts: eXtensible Time Series. R
+  package version 0.9-7. https://CRAN.R-project.org/package=xts
+  
+  Matt Dowle and Arun Srinivasan (2017). data.table: Extension of `data.frame`. R
+  package version 1.10.4. https://CRAN.R-project.org/package=data.table
+  
+  Pablo Montero, José A. Vilar (2014). TSclust: An R Package for Time Series
+  Clustering. Journal of Statistical Software, 62(1), 1-43. URL
+  http://www.jstatsoft.org/v62/i01/.
+  
+  Paparrizos J, Gravano L (2015). “k-Shape:  Efficient and Accurate Clustering of Time    Series.” In Proceedings  of  the  2015  ACM  SIGMOD  International  Conference  on      Management  of Data , SIGMOD ’15, pp. 1855–1870. ACM, New York, NY, USA.  ISBN          978-1-4503-2758-9. doi:10.1145/2723372.2737793.
+  
+  R Core Team (2016). R: A language and environment for statistical computing. R
+  Foundation for Statistical Computing, Vienna, Austria. URL
+  https://www.R-project.org/.
+  
+  Shivaram Venkataraman, Xiangrui Meng, Felix Cheung and The Apache Software
+  Foundation (NA). SparkR: R Frontend for Apache Spark. http://www.apache.org/
+  http://spark.apache.org/.
+  
+  Usue Mori, Alexander Mendiburu, Jose A. Lozano (2016). Distance Measures for
+  Time Series in R: The TSdist Package R journal, 8(2), 451--459. URL
+  https://journal.r-project.org/archive/2016/RJ-2016-058/index.html
+  
+  
+
+
+
+
+\pagebreak
+
+## Agradecimientos
+
+\vspace{30mm}
+
+\begin{flushright}
+
+\textit{A mi familia por inculcarme la sed por aprender}
+
+\end{flushright}
+
+\vspace{20mm}
+
+Quisiera agradecer en primer lugar a Manuel Martín-Merino (UPSA) y José Miguel Hernández Izquierdo (Telefónica I+D) por su ayuda en la redacción de este TFE. También, por supuesto, a todo el claustro de profesores del Experto en Big Data de la UPSA, compañeros etc.
+
+Sin embargo, este trabajo no habría sido posible sin el de Alexis Sardá-Espinosa, autor del paquete dtwclust y el resto de autores de paquetes de R y de R en si mismo, así como de R Studio.
+
+Por último, el 90\% de este trabajo pertenece a todos aquellos que responden preguntas en StackOverflow, Github, etc. ya que sin esas indicaciones, jamás hubiera terminado este trabajo. 
+
+A todos ellos, Gracias!!
+
+
+
